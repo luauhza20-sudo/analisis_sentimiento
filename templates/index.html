@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEC Sentiment Analyzer</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e2e8f0;
+            min-height: 100vh;
+        }
+
+        header {
+            background: linear-gradient(135deg, #1e1b4b, #312e81);
+            padding: 24px 40px;
+            border-bottom: 1px solid #4c1d95;
+        }
+
+        header h1 { font-size: 28px; }
+        header p  { color: #a5b4fc; margin-top: 4px; font-size: 14px; }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 24px;
+            padding: 32px 40px;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .card {
+            background: #1e1e2e;
+            border-radius: 12px;
+            padding: 24px;
+            border: 1px solid #2d2d44;
+        }
+
+        .card h2 {
+            font-size: 18px;
+            margin-bottom: 16px;
+            color: #a5b4fc;
+        }
+
+        .upload-area {
+            border: 2px dashed #4c1d95;
+            border-radius: 8px;
+            padding: 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 16px;
+        }
+
+        .upload-area:hover { border-color: #7c3aed; background: #1a1a2e; }
+        .upload-area input { display: none; }
+        .upload-area .icon { font-size: 48px; }
+        .upload-area p { color: #94a3b8; margin-top: 8px; }
+
+        select {
+            width: 100%;
+            padding: 10px 14px;
+            background: #2d2d44;
+            border: 1px solid #4c1d95;
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #7c3aed, #4c1d95);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        button:hover { opacity: 0.85; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .preview {
+            background: #12121e;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 12px;
+            color: #94a3b8;
+            max-height: 150px;
+            overflow-y: auto;
+            margin-bottom: 16px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        .result-box {
+            background: #12121e;
+            border-left: 4px solid #7c3aed;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            min-height: 200px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            margin-bottom: 12px;
+        }
+
+        .badge.positive { background: #14532d; color: #86efac; }
+        .badge.negative { background: #7f1d1d; color: #fca5a5; }
+        .badge.neutral  { background: #1e3a5f; color: #93c5fd; }
+        .badge.mixed    { background: #713f12; color: #fcd34d; }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .stat {
+            background: #12121e;
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .stat .value { font-size: 20px; font-weight: bold; color: #a5b4fc; }
+        .stat .label { font-size: 11px; color: #64748b; margin-top: 4px; }
+
+        .spinner {
+            text-align: center;
+            padding: 40px;
+            color: #a5b4fc;
+            font-size: 14px;
+        }
+
+        .info-box {
+            background: #1a2744;
+            border: 1px solid #2563eb;
+            border-radius: 8px;
+            padding: 20px;
+            color: #93c5fd;
+            font-size: 14px;
+            line-height: 1.8;
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            color: #475569;
+            font-size: 12px;
+            border-top: 1px solid #2d2d44;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>📊 SEC Sentiment Analyzer</h1>
+    <p>Powered by Qwen2 0.5B Instruct — 100% Local | Ningún dato sale de tu máquina</p>
+</header>
+
+<div class="container">
+
+    <div>
+        <div class="card">
+            <h2>📁 Cargar Archivo SEC</h2>
+
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <input type="file" id="fileInput" accept=".txt,.pdf,.htm,.html" onchange="handleUpload(event)">
+                <div class="icon">📂</div>
+                <p>Haz clic para subir tu archivo</p>
+                <p style="font-size:12px; margin-top:4px;">.txt · .pdf · .htm · .html</p>
+            </div>
+
+            <div id="fileInfo" style="display:none;">
+                <div class="stats">
+                    <div class="stat">
+                        <div class="value" id="charCount">-</div>
+                        <div class="label">Caracteres</div>
+                    </div>
+                    <div class="stat">
+                        <div class="value" id="sectionCount">-</div>
+                        <div class="label">Secciones</div>
+                    </div>
+                </div>
+
+                <label style="font-size:13px; color:#94a3b8;">🔍 Seleccionar sección:</label>
+                <select id="sectionSelect" onchange="updatePreview()">
+                    <option value="">— Selecciona una sección —</option>
+                </select>
+
+                <p style="font-size:12px; color:#64748b; margin-bottom:8px;">Vista previa:</p>
+                <div class="preview" id="previewBox"></div>
+
+                <button id="analyzeBtn" onclick="runAnalysis()" disabled>
+                    🚀 Analizar Sentimiento
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <div class="card">
+            <h2>🤖 Resultado del Análisis</h2>
+            <div id="resultArea">
+                <div class="info-box">
+                    <strong>👈 Instrucciones:</strong><br><br>
+                    1. Sube un archivo SEC (10-K, 10-Q, 8-K)<br>
+                    2. Selecciona una sección a analizar<br>
+                    3. Haz clic en "Analizar Sentimiento"<br><br>
+                    <strong>📌 Descarga archivos en:</strong><br>
+                    https://www.sec.gov/cgi-bin/browse-edgar
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<footer>
+    🔒 100% Local — Qwen2 0.5B Instruct — Sin APIs externas
+</footer>
+
+<script>
+    let sectionsData = {};
+
+    async function handleUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        document.getElementById("fileInfo").style.display = "none";
+        document.getElementById("resultArea").innerHTML =
+            '<div class="spinner">⏳ Extrayendo texto del archivo...</div>';
+
+        const response = await fetch("/upload", { method: "POST", body: formData });
+        const data = await response.json();
+
+        sectionsData = data.texts;
+
+        const select = document.getElementById("sectionSelect");
+        select.innerHTML = '<option value="">— Selecciona una sección —</option>';
+        data.sections.forEach(s => {
+            const opt = document.createElement("option");
+            opt.value = s;
+            opt.textContent = s;
+            select.appendChild(opt);
+        });
+
+        const totalChars = Object.values(sectionsData).join("").length;
+        document.getElementById("charCount").textContent = totalChars.toLocaleString();
+        document.getElementById("sectionCount").textContent = data.sections.length;
+        document.getElementById("fileInfo").style.display = "block";
+
+        document.getElementById("resultArea").innerHTML =
+            '<div class="info-box">✅ Archivo cargado. Selecciona una sección y haz clic en Analizar.</div>';
+    }
+
+    function updatePreview() {
+        const section = document.getElementById("sectionSelect").value;
+        const preview = document.getElementById("previewBox");
+        const btn = document.getElementById("analyzeBtn");
+
+        if (section && sectionsData[section]) {
+            preview.textContent = sectionsData[section].substring(0, 600) + "...";
+            btn.disabled = false;
+        } else {
+            preview.textContent = "";
+            btn.disabled = true;
+        }
+    }
+
+    async function runAnalysis() {
+        const section = document.getElementById("sectionSelect").value;
+        const text = sectionsData[section];
+        const btn = document.getElementById("analyzeBtn");
+
+        btn.disabled = true;
+        btn.textContent = "⏳ Analizando...";
+
+        document.getElementById("resultArea").innerHTML =
+            '<div class="spinner">⏳ Qwen2 0.5B está analizando... (puede tardar 30-60 segundos)</div>';
+
+        const response = await fetch("/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text })
+        });
+
+        const data = await response.json();
+        const result = data.result || "Error al analizar";
+
+        let badgeClass = "neutral";
+        let badgeText = "⚪ Neutral";
+        if (/positive/i.test(result))      { badgeClass = "positive"; badgeText = "🟢 Positive"; }
+        else if (/negative/i.test(result)) { badgeClass = "negative"; badgeText = "🔴 Negative"; }
+        else if (/mixed/i.test(result))    { badgeClass = "mixed";    badgeText = "🟡 Mixed"; }
+
+        document.getElementById("resultArea").innerHTML = `
+            <span class="badge ${badgeClass}">${badgeText}</span>
+            <p style="font-size:12px; color:#64748b; margin-bottom:8px;">Sección: <strong>${section}</strong></p>
+            <div class="result-box">${result}</div>
+            <div class="stats" style="margin-top:16px;">
+                <div class="stat">
+                    <div class="value">${Math.min(text.length, 1800).toLocaleString()}</div>
+                    <div class="label">Chars procesados</div>
+                </div>
+                <div class="stat">
+                    <div class="value">Qwen2 0.5B</div>
+                    <div class="label">Modelo usado</div>
+                </div>
+            </div>
+        `;
+
+        btn.disabled = false;
+        btn.textContent = "🚀 Analizar Sentimiento";
+    }
+</script>
+
+</body>
+</html>
