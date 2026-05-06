@@ -1,147 +1,116 @@
-from flask import Flask, request, jsonify, render_template
-from flask_cors import CORS
-import os
+from flask import Flask, request, render_template, jsonify
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import PyPDF2
+from bs4 import BeautifulSoup
+import io
 import re
 
 app = Flask(__name__)
-CORS(app)
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+print("Cargando modelo Qwen2...")
+model_name = "Qwen/Qwen2-0.5B-Instruct"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float32,
+    device_map="auto"
+)
+print("Modelo listo!")
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+def extract_text(file, filename):
+    content = file.read()
+    if filename.endswith(".pdf"):
+        reader = PyPDF2.PdfReader(io.BytesIO(content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    elif filename.endswith((".htm", ".html")):
+        soup = BeautifulSoup(content, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        return soup.get_text(separator="\n")
+    else:
+        return content.decode("utf-8", errors="ignore")
 
-def extract_sections(text: str) -> dict[str, str]:
-    """Very lightweight SEC section detector."""
+def split_sections(text):
     section_patterns = {
-        "Item 1 – Business": r"item\s+1[.\s]+business",
-        "Item 1A – Risk Factors": r"item\s+1a[.\s]+risk factors",
-        "Item 7 – MD&A": r"item\s+7[.\s]+management",
-        "Item 8 – Financial Statements": r"item\s+8[.\s]+financial",
+        "Full Document": None,
+        "Item 1 - Business": r"item\s*1[^a-z]*business",
+        "Item 1A - Risk Factors": r"item\s*1a[^a-z]*risk\s*factor",
+        "Item 7 - MD&A": r"item\s*7[^a-z]*(management|discussion)",
+        "Item 8 - Financial Statements": r"item\s*8[^a-z]*financial",
     }
-    sections: dict[str, str] = {}
-    lower = text.lower()
-    positions = []
-    for name, pattern in section_patterns.items():
-        m = re.search(pattern, lower)
-        if m:
-            positions.append((m.start(), name))
-    positions.sort()
+    sections = {"Full Document": text}
+    lines = text.split("\n")
+    current = "Full Document"
+    buffer = {"Full Document": []}
 
-    for i, (start, name) in enumerate(positions):
-        end = positions[i + 1][0] if i + 1 < len(positions) else start + 3000
-        snippet = text[start:end][:2500].strip()
-        if snippet:
-            sections[name] = snippet
-    if not sections:
-        sections["Full Document"] = text[:2500].strip()
-    return sections
-
-
-def run_sentiment(text: str) -> dict:
-    """
-    Call Qwen2-0.5B-Instruct via the transformers pipeline.
-    Falls back gracefully if the model isn't installed yet.
-    """
-    prompt = (
-        "You are a financial analyst. Analyze the sentiment of the following SEC filing excerpt. "
-        "Reply ONLY with one of: Positive, Negative, or Neutral. Then on a new line, "
-        "write one concise sentence explaining why.\n\n"
-        f"Text:\n{text[:1200]}\n\nSentiment:"
-    )
-
-    try:
-        from transformers import pipeline
-        pipe = pipeline(
-            "text-generation",
-            model="Qwen/Qwen2-0.5B-Instruct",
-            max_new_tokens=60,
-            do_sample=False,
-        )
-        result = pipe(prompt)[0]["generated_text"]
-        # Strip the prompt prefix
-        answer = result[len(prompt):].strip()
-        label_line = answer.split("\n")[0].strip()
-        explanation = " ".join(answer.split("\n")[1:]).strip() if "\n" in answer else ""
-
-        label = "Neutral"
-        for candidate in ["Positive", "Negative", "Neutral"]:
-            if candidate.lower() in label_line.lower():
-                label = candidate
+    for line in lines:
+        for name, pattern in section_patterns.items():
+            if pattern and re.search(pattern, line.lower()):
+                current = name
+                buffer[current] = []
                 break
+        buffer.setdefault(current, []).append(line)
 
-        return {"label": label, "explanation": explanation or label_line, "model": "Qwen2-0.5B-Instruct"}
+    return {k: "\n".join(v).strip() for k, v in buffer.items() if len("\n".join(v).strip()) > 100}
 
-    except Exception as e:
-        # Fallback: keyword heuristic so the UI still works without GPU/model
-        pos_words = ["growth", "profit", "increase", "strong", "record", "expand", "revenue"]
-        neg_words = ["loss", "risk", "decline", "litigation", "impairment", "restructur", "debt"]
-        low = text.lower()
-        pos = sum(low.count(w) for w in pos_words)
-        neg = sum(low.count(w) for w in neg_words)
-        label = "Positive" if pos > neg else ("Negative" if neg > pos else "Neutral")
-        return {
-            "label": label,
-            "explanation": f"(Heuristic fallback – install transformers to use Qwen2) pos_signals={pos}, neg_signals={neg}",
-            "model": "keyword-heuristic",
-            "error": str(e),
+def analyze(text):
+    truncated = text[:1800]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a financial analyst specialized in SEC filings. "
+                "Analyze the sentiment and respond with:\n"
+                "**Sentiment:** [Positive/Negative/Neutral/Mixed]\n"
+                "**Confidence:** [High/Medium/Low]\n"
+                "**Key Signals:** [bullet points]\n"
+                "**Summary:** [2-3 sentences]"
+            )
+        },
+        {
+            "role": "user",
+            "content": f"Analyze the sentiment of this SEC filing:\n\n{truncated}"
         }
-
-# ── routes ───────────────────────────────────────────────────────────────────
+    ]
+    formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer([formatted], return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=300,
+            temperature=0.7,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id
+        )
+    new_tokens = output_ids[0][inputs.input_ids.shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
+@app.route("/upload", methods=["POST"])
+def upload():
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+    text = extract_text(file, file.filename)
+    sections = split_sections(text)
+    return jsonify({
+        "sections": list(sections.keys()),
+        "texts": sections
+    })
 
 @app.route("/analyze", methods=["POST"])
-def analyze():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "Empty filename"}), 400
-
-    section_choice = request.form.get("section", "auto")
-
-    # Read content
-    raw = file.read()
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-
-    sections = extract_sections(text)
-    section_names = list(sections.keys())
-
-    # Pick which section to analyse
-    if section_choice == "auto" or section_choice not in sections:
-        target_name = section_names[0]
-    else:
-        target_name = section_choice
-
-    result = run_sentiment(sections[target_name])
-    result["section_analyzed"] = target_name
-    result["available_sections"] = section_names
-    result["char_count"] = len(text)
-
-    return jsonify(result)
-
-
-@app.route("/sections", methods=["POST"])
-def get_sections():
-    if "file" not in request.files:
-        return jsonify({"error": "No file"}), 400
-    file = request.files["file"]
-    raw = file.read()
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-    sections = extract_sections(text)
-    return jsonify({"sections": list(sections.keys())})
-
+def analyze_route():
+    data = request.json
+    text = data.get("text", "")
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+    result = analyze(text)
+    return jsonify({"result": result})
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000)
